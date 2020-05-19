@@ -1,29 +1,77 @@
 #!/bin/bash
+jwt=$(curl -v --silent 'http://'$MANAGER_ADDRESS':9000/api/auth' \
+--data '{"username":"'$ADMIN_USER'","password":"'$ADMIN_PASSWORD'"}' --stderr - | grep -o '"jwt": *"[^"]*' | grep -o '[^"]*$')
 
-service_name="portainer-integration-${PORTAINER_PORT:-9100}"
-data_folder="/tmp/integration/${PORTAINER_PORT:-9100}"
+SERVICE_NAME="portainer-integration-${PORTAINER_PORT:-9100}"
+DATA_FOLDER="/tmp/integration/${PORTAINER_PORT:-9100}"
 
-mkdir -pv "${data_folder}"
+mkdir -pv "${DATA_FOLDER}"
 
 echo "Cleanup environment"
 
-docker service rm "${service_name}"
+curl 'http://'$MANAGER_ADDRESS':9000/api/endpoints/1/docker/services/'$SERVICE_NAME'' -X DELETE -H 'Authorization: Bearer '$jwt''
 
-rm -rf "${data_folder}/*"
+rm -rf "${DATA_FOLDER}/*"
 
 echo "Copying Portainer data"
 
-cp -rp /tmp/data/* "${data_folder}/"
+cp -rp /tmp/data/* "${DATA_FOLDER}/"
 
 echo "Deploying Portainer"
 
-docker service create --name ${service_name} \
---network portainer_agent_network \
---publish ${PORTAINER_PORT:-9100}:9000 \
---publish ${PORTAINER_EDGE_PORT:-10000}:8000 \
---replicas=1 \
---mount type=bind,src=/${data_folder},dst=/data \
---constraint 'node.role == manager' \
-${PORTAINER_IMAGE:-portainerci/portainer:develop} -H "tcp://tasks.agent:9001" --tlsskipverify
+curl 'http://'$MANAGER_ADDRESS':9000/api/endpoints/1/docker/services/create' -H 'Authorization: Bearer '$jwt'' --data-raw 
+'{
+    "Name": "test",
+    "TaskTemplate": {
+        "ContainerSpec": {
+            "Mounts": [
+                {
+                    "Source": "'${DATA_FOLDER}'",
+                    "Target": "/data",
+                    "ReadOnly": false,
+                    "Type": "bind",
+                    "Id": ""
+                }
+            ],
+            "Image": "'${PORTAINER_IMAGE:-portainerci/portainer:develop}'",
+            "Args": [
+                "-H",
+                "tcp://tasks.agent:9001",
+                "--tlsskipverify"
+            ]
+        },
+        "Placement": {
+            "Constraints": [
+                "node.role==manager"
+            ]
+        }
+    },
+    "Mode": {
+        "Replicated": {
+            "Replicas": 1
+        }
+    },
+    "EndpointSpec": {
+        "Ports": [
+            {
+                "Protocol": "tcp",
+                "PublishMode": "ingress",
+                "TargetPort": 9000,
+                "PublishedPort": '${PORTAINER_PORT:-9100}'
+            },
+            {
+                "Protocol": "tcp",
+                "PublishMode": "ingress",
+                "TargetPort": 8000,
+                "PublishedPort": '${PORTAINER_EDGE_PORT:-10000}'
+            }
+        ]
+    },
+    "Networks": [
+        {
+            "Target": "portainer_agent_network"
+        }
+    ]
+}'
 
 exit 0
